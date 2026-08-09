@@ -13,16 +13,160 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: sdk-consumers-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CLIENTS_REF: 1b3e3e3582cc4880443b17c0669cce832543ad16
+  INTERFACES_REF: 19fe535db6bccaf3e7e86deb0b1a40bbead7f55c
+
 jobs:
-  sdk-clients:
-    uses: zed-pkg-test/.github/.github/workflows/sdk-client-language-matrix.yml@df3eed96202810b7e7d6667fabc3041b19e6a22f
-    with:
-      clients_repository: cliptown/cliptown-clients
-      clients_ref: main
-      clients_root: clients
-      interfaces_repository: cliptown/cliptown-interfaces
-      interfaces_ref: main
-      interfaces_path: cliptown-interfaces
-      interfaces_dependency: cliptown/cliptown-interfaces
-    secrets:
-      read_token: ${{ secrets.TEST_ORG_READ_TOKEN }}
+  package-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out pinned clients source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          repository: cliptown/cliptown-clients
+          ref: ${{ env.CLIENTS_REF }}
+          path: cliptown-clients
+          persist-credentials: false
+          show-progress: false
+      - name: Validate package layout and declared Zed dependencies
+        working-directory: cliptown-clients
+        run: |
+          bash scripts/validate-layout.sh
+          python3 - <<'PY'
+          import pathlib
+          import tomllib
+
+          document = tomllib.loads(pathlib.Path('.zpkg.toml').read_text())
+          if document.get('package', {}).get('name') != 'cliptown-clients':
+              raise SystemExit('unexpected Zed package identity')
+          dependencies = document.get('dependencies', {})
+          if 'cliptown/cliptown-interfaces' not in dependencies:
+              raise SystemExit('missing cliptown interfaces dependency')
+          print('ClipTown client package contract is valid')
+          PY
+
+  rust-consumer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out pinned clients source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          repository: cliptown/cliptown-clients
+          ref: ${{ env.CLIENTS_REF }}
+          path: cliptown-clients
+          persist-credentials: false
+          show-progress: false
+      - name: Check out pinned interfaces source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          repository: cliptown/cliptown-interfaces
+          ref: ${{ env.INTERFACES_REF }}
+          path: cliptown-interfaces
+          persist-credentials: false
+          show-progress: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          components: rustfmt, clippy
+      - name: Compile and test the Rust SDK
+        working-directory: cliptown-clients/clients/rust
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --all-targets
+
+  typescript-consumer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out pinned clients source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          repository: cliptown/cliptown-clients
+          ref: ${{ env.CLIENTS_REF }}
+          path: cliptown-clients
+          persist-credentials: false
+          show-progress: false
+      - name: Check out pinned interfaces source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          repository: cliptown/cliptown-interfaces
+          ref: ${{ env.INTERFACES_REF }}
+          path: cliptown-interfaces
+          persist-credentials: false
+          show-progress: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            cliptown-interfaces/generated/typescript/package-lock.json
+            cliptown-clients/clients/typescript/package-lock.json
+      - name: Build interfaces and exercise every TypeScript runtime export
+        run: |
+          npm ci --prefix cliptown-interfaces/generated/typescript
+          npm run build --prefix cliptown-interfaces/generated/typescript
+          npm ci --prefix cliptown-clients/clients/typescript
+          npm run typecheck --prefix cliptown-clients/clients/typescript
+          npm test --prefix cliptown-clients/clients/typescript
+          npm run build --prefix cliptown-clients/clients/typescript
+
+  dart-consumer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out pinned clients source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          repository: cliptown/cliptown-clients
+          ref: ${{ env.CLIENTS_REF }}
+          path: cliptown-clients
+          persist-credentials: false
+          show-progress: false
+      - name: Check out pinned interfaces source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          repository: cliptown/cliptown-interfaces
+          ref: ${{ env.INTERFACES_REF }}
+          path: cliptown-interfaces
+          persist-credentials: false
+          show-progress: false
+      - uses: dart-lang/setup-dart@65eb853c7ba17dde3be364c3d2858773e7144260 # v1.7.1
+        with:
+          sdk: 3.12.2
+      - name: Analyze and test the Dart SDK
+        working-directory: cliptown-clients/clients/dart
+        run: |
+          dart pub get
+          dart format --output=none --set-exit-if-changed lib test
+          dart analyze
+          dart test --reporter=expanded
+
+  go-consumer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out pinned clients source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          repository: cliptown/cliptown-clients
+          ref: ${{ env.CLIENTS_REF }}
+          path: cliptown-clients
+          persist-credentials: false
+          show-progress: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.1.0
+        with:
+          go-version: 1.22.x
+          cache-dependency-path: cliptown-clients/clients/go/go.mod
+      - name: Format, vet, and test the Go SDK
+        working-directory: cliptown-clients/clients/go
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
